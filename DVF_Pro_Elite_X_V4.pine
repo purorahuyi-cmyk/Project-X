@@ -1,0 +1,357 @@
+//@version=6
+indicator("DVF Pro Elite X V4", overlay=true, max_labels_count=500, max_lines_count=500)
+
+//==================================================
+// INPUTS
+//==================================================
+
+src = input.source(hl2, "Source")
+
+atrLen = input.int(20, "ATR Length", minval=1)
+noiseMult = input.float(2.0, "Noise Multiplier", step=0.1)
+snapSpeed = input.float(0.50, "DVF Speed", step=0.05)
+
+emaLength = input.int(20, "Trend EMA")
+
+atrStop = input.float(1.20, "ATR Stop", step=0.1)
+atrTarget = input.float(1.50, "ATR Target", step=0.1)
+
+showEMA = input.bool(true, "Show EMA")
+showVWAP = input.bool(true, "Show VWAP")
+showDashboard = input.bool(true, "Show Dashboard")
+
+futureTicker = input.symbol("NSE:NIFTY1!", "Futures Symbol")
+futureVolumeMultiplier = input.float(1.20, "Future Volume Multiplier")
+
+//==================================================
+// CORE CALCULATIONS
+//==================================================
+
+ema = ta.ema(close, emaLength)
+vwap = ta.vwap(hlc3)
+atr = ta.atr(atrLen)
+
+upperATR = close + atr
+lowerATR = close - atr
+
+//==================================================
+// FUTURES VOLUME
+//==================================================
+
+futureVolume = request.security(futureTicker, timeframe.period, volume)
+futureVolumeMA = request.security(futureTicker, timeframe.period, ta.sma(volume, 20))
+futureVolumeStrong = futureVolume > futureVolumeMA * futureVolumeMultiplier
+
+//==================================================
+// DVF ENGINE
+//==================================================
+
+threshold = atr * noiseMult
+
+var float dvf = na
+
+if barstate.isfirst
+    dvf := src
+
+difference = src - dvf
+
+if math.abs(difference) > threshold
+    dvf := dvf + difference * snapSpeed
+
+//==================================================
+// TREND ENGINE
+//==================================================
+
+var int trend = 0
+
+if dvf > dvf[1]
+    trend := 1
+else if dvf < dvf[1]
+    trend := -1
+
+bullTrend = trend == 1
+bearTrend = trend == -1
+
+bullFlip = bullTrend and trend[1] == -1
+bearFlip = bearTrend and trend[1] == 1
+
+//==================================================
+// FILTERS
+//==================================================
+
+aboveEMA = close > ema
+belowEMA = close < ema
+
+aboveVWAP = close > vwap
+belowVWAP = close < vwap
+
+longFilter = bullTrend and aboveEMA and aboveVWAP
+shortFilter = bearTrend and belowEMA and belowVWAP
+
+//==================================================
+// PLOTS
+//==================================================
+
+plot(dvf, title="DVF", color=bullTrend ? color.lime : color.red, linewidth=3)
+plot(showEMA ? ema : na, title="EMA", color=color.blue, linewidth=2)
+plot(showVWAP ? vwap : na, title="VWAP", color=color.orange, linewidth=2)
+
+bgcolor(bullTrend ? color.new(color.green,90) : color.new(color.red,90))
+//==================================================
+// PART 2A
+// SMART TREND ENGINE
+//==================================================
+
+//-----------------------------
+// RSI
+//-----------------------------
+rsi = ta.rsi(close, 14)
+
+//-----------------------------
+// MOMENTUM
+//-----------------------------
+momentum = ta.roc(close, 5)
+
+bullMomentum = momentum > 0
+bearMomentum = momentum < 0
+
+//-----------------------------
+// CANDLE STRENGTH
+//-----------------------------
+body = math.abs(close - open)
+candleRange = high - low
+bodyPercent = candleRange > 0 ? body / candleRange : 0
+
+strongBull = close > open and bodyPercent > 0.60
+strongBear = close < open and bodyPercent > 0.60
+
+//==================================================
+// TREND SCORE
+//==================================================
+
+trendScore = 0
+trendScore += bullTrend ? 20 : 0
+trendScore += aboveVWAP ? 20 : 0
+trendScore += aboveEMA ? 20 : 0
+trendScore += futureVolumeStrong ? 20 : 0
+trendScore += bullMomentum ? 20 : 0
+
+bearScore = 0
+bearScore += bearTrend ? 20 : 0
+bearScore += belowVWAP ? 20 : 0
+bearScore += belowEMA ? 20 : 0
+bearScore += futureVolumeStrong ? 20 : 0
+bearScore += bearMomentum ? 20 : 0
+
+//==================================================
+// CONTINUATION ENGINE
+//==================================================
+
+continueBull = trendScore >= 80
+continueBear = bearScore >= 80
+
+//==================================================
+// EARLY ENTRY
+//==================================================
+
+earlyLong = bullTrend and aboveVWAP and rsi > 50 and bullMomentum
+earlyShort = bearTrend and belowVWAP and rsi < 50 and bearMomentum
+
+//==================================================
+// STRONG ENTRY
+//==================================================
+
+strongLong = continueBull and strongBull
+strongShort = continueBear and strongBear
+
+//==================================================
+// REVERSAL ENGINE
+//==================================================
+
+reversalLong = bullTrend and (rsi < 52 or close < vwap or momentum < 0)
+
+reversalShort = bearTrend and (rsi > 48 or close > vwap or momentum > 0)
+
+//==================================================
+// REVERSAL PROBABILITY
+//==================================================
+
+bullReverseProb = 0
+bullReverseProb += close < vwap ? 35 : 0
+bullReverseProb += rsi < 50 ? 30 : 0
+bullReverseProb += momentum < 0 ? 35 : 0
+
+bearReverseProb = 0
+bearReverseProb += close > vwap ? 35 : 0
+bearReverseProb += rsi > 50 ? 30 : 0
+bearReverseProb += momentum > 0 ? 35 : 0
+
+//==================================================
+// DON'T CHASE FILTER
+//==================================================
+
+extension = math.abs(close - dvf) / atr
+dontChase = extension > 2.5
+//==================================================
+// PART 2B
+// SIGNALS
+//==================================================
+
+// Early Buy
+plotshape(
+     earlyLong,
+     title="Early Buy",
+     style=shape.diamond,
+     location=location.belowbar,
+     color=color.blue,
+     size=size.tiny)
+
+// Early Sell
+plotshape(
+     earlyShort,
+     title="Early Sell",
+     style=shape.diamond,
+     location=location.abovebar,
+     color=color.purple,
+     size=size.tiny)
+
+// Strong Buy
+plotshape(
+     strongLong,
+     title="Strong Buy",
+     style=shape.circle,
+     location=location.belowbar,
+     color=color.lime,
+     size=size.small)
+
+// Strong Sell
+plotshape(
+     strongShort,
+     title="Strong Sell",
+     style=shape.circle,
+     location=location.abovebar,
+     color=color.red,
+     size=size.small)
+
+// Exit Long
+plotshape(
+     reversalLong,
+     title="Exit Long",
+     style=shape.xcross,
+     location=location.abovebar,
+     color=color.orange,
+     size=size.tiny)
+
+// Exit Short
+plotshape(
+     reversalShort,
+     title="Exit Short",
+     style=shape.xcross,
+     location=location.belowbar,
+     color=color.orange,
+     size=size.tiny)
+
+// Don't Chase
+plotshape(
+     dontChase,
+     title="Don't Chase",
+     style=shape.square,
+     location=location.bottom,
+     color=color.yellow,
+     size=size.tiny)
+
+//==================================================
+// MAIN DVF PLOTS
+//==================================================
+
+plot(
+     dvf,
+     title="DVF",
+     color=bullTrend ? color.lime : color.red,
+     linewidth=4)
+
+plot(
+     showEMA ? ema : na,
+     title="EMA",
+     color=color.blue,
+     linewidth=2)
+
+plot(
+     showVWAP ? vwap : na,
+     title="VWAP",
+     color=color.white,
+     linewidth=2)
+//==================================================
+// PART 3
+// DASHBOARD + ALERTS
+//==================================================
+
+//--------------------------------------------------
+// TREND LABEL
+//--------------------------------------------------
+
+trendText = bullTrend ? "BULLISH" : "BEARISH"
+volumeText = futureVolumeStrong ? "HIGH" : "LOW"
+
+//--------------------------------------------------
+// DASHBOARD
+//--------------------------------------------------
+
+var table dashboard = table.new(position.top_right, 2, 7, border_width = 1)
+
+if barstate.islast and showDashboard
+
+    table.cell(dashboard, 0, 0, "DVF PRO X", text_color=color.white, bgcolor=color.black)
+    table.cell(dashboard, 1, 0, "", bgcolor=color.black)
+
+    table.cell(dashboard, 0, 1, "Trend")
+    table.cell(dashboard, 1, 1, trendText, text_color=bullTrend ? color.lime : color.red)
+
+    table.cell(dashboard, 0, 2, "Bull Score")
+    table.cell(dashboard, 1, 2, str.tostring(trendScore))
+
+    table.cell(dashboard, 0, 3, "Bear Score")
+    table.cell(dashboard, 1, 3, str.tostring(bearScore))
+
+    table.cell(dashboard, 0, 4, "Bull Rev")
+    table.cell(dashboard, 1, 4, str.tostring(bullReverseProb) + "%")
+
+    table.cell(dashboard, 0, 5, "Bear Rev")
+    table.cell(dashboard, 1, 5, str.tostring(bearReverseProb) + "%")
+
+    table.cell(dashboard, 0, 6, "Future Vol")
+    table.cell(dashboard, 1, 6, volumeText, text_color=futureVolumeStrong ? color.lime : color.orange)
+
+//--------------------------------------------------
+// ATR LEVELS
+//--------------------------------------------------
+
+longSL = close - atr * atrStop
+longTP = close + atr * atrTarget
+
+shortSL = close + atr * atrStop
+shortTP = close - atr * atrTarget
+
+plot(longSL, title="Long SL", color=color.new(color.red, 70))
+plot(longTP, title="Long TP", color=color.new(color.green, 70))
+
+plot(shortSL, title="Short SL", color=color.new(color.red, 85))
+plot(shortTP, title="Short TP", color=color.new(color.green, 85))
+
+//--------------------------------------------------
+// ALERT CONDITIONS
+//--------------------------------------------------
+
+alertcondition(earlyLong, title="Early Buy", message="DVF PRO X Early Buy")
+
+alertcondition(strongLong, title="Strong Buy", message="DVF PRO X Strong Buy")
+
+alertcondition(earlyShort, title="Early Sell", message="DVF PRO X Early Sell")
+
+alertcondition(strongShort, title="Strong Sell", message="DVF PRO X Strong Sell")
+
+alertcondition(reversalLong, title="Exit Long", message="DVF PRO X Long Exit Warning")
+
+alertcondition(reversalShort, title="Exit Short", message="DVF PRO X Short Exit Warning")
+
+alertcondition(dontChase, title="Don't Chase", message="Price is extended. Avoid chasing.")
